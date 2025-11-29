@@ -1,1 +1,0 @@
-# This file is required to make the handlers directory a Python package
