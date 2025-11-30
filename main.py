@@ -1,275 +1,417 @@
-#!/usr/bin/env python3
-# main.py
 import os
 import logging
-import sqlite3
 import asyncio
-from typing import Dict
-
-import requests
 from datetime import datetime
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-)
-from telegram.constants import ParseMode
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 
-# ---------- Logging ----------
+# تنظیمات لاگ
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ---------- ENV ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN environment variable not set. Exiting.")
-    raise SystemExit("BOT_TOKEN environment variable not set")
+# دریافت توکن از متغیرهای محیطی
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '7800798991:AAE_NBnYwsJTNgCKIB5v88WuRjJnaAU9PnA')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '7321524568'))
 
-# مقادیر پیش‌فرض (قابل تغییر در ENV)
-SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "apmarket21")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7321524568"))
-AI_API_TOKEN = os.environ.get("AI_API_TOKEN")  # اختیاری
-DB_PATH = os.environ.get("DB_PATH", "orders.db")
-
-# ---------- Sample FAQ ----------
-FAQ: Dict[str, Dict[str, str]] = {
-    "پرداخت": {
-        "نحوه پرداخت چگونه است؟": "شما می‌توانید با کارت‌های شتاب از طریق درگاه بانکی پرداخت کنید.",
-        "آیا پرداخت در محل وجود دارد؟": "در برخی مناطق پرداخت در محل فعال است؛ در صفحه تسویه بررسی کنید."
+# دیتابیس کامل سوالات متداول
+FAQ_DATABASE = {
+    # دسته: محصولات
+    'موجودی محصول': {
+        'answer': '📦 **اطلاع از موجودی محصول:**\n\nموجودی هر محصول در صفحه محصول نمایش داده شده است:\n• ✅ اگر محصول موجود باشد، دکمه "افزودن به سبد خرید" فعال است\n• ❌ اگر ناموجود باشد، گزینه "ناموجود" نمایش داده می‌شود\n• 🔔 با فعال کردن "اطلاع از موجودی" می‌توانید هنگام موجود شدن مطلع شوید',
+        'keywords': ['موجودی', 'ناموجود', 'موجود', 'موجودي', 'موجود هست', 'موجود نیست', 'موجودی محصول']
     },
-    "ارسال": {
-        "هزینه ارسال چقدر است؟": "هزینه ارسال به وزن و آدرس مقصد بستگی دارد و در صفحه پرداخت نمایش داده می‌شود.",
-        "چقدر طول می‌کشد؟": "معمولاً بین 1 تا 5 روز کاری بسته به شهر مقصد."
+    'گارانتی محصولات': {
+        'answer': '🛡️ **گارانتی محصولات:**\n\n• بله، تمامی محصولات دارای گارانتی هستند\n• اطلاعات دقیق گارانتی هر محصول در صفحه توضیحات آن درج شده است\n• مدت گارانتی از 6 ماه تا 24 ماه متغیر است\n• گارانتی شامل نقص فنی و manufacturing defects می‌شود',
+        'keywords': ['گارانتی', 'ضمانت', 'گارانتی محصول', 'ضمانت محصول', 'گارانتی داره']
+    },
+    'مشخصات محصول': {
+        'answer': '📋 **مشاهده مشخصات کامل محصول:**\n\nبرای مشاهده مشخصات کامل:\n1. به صفحه محصول مراجعه کنید\n2. بخش "توضیحات کامل" را مطالعه کنید\n3. بخش "مشخصات فنی" را بررسی کنید\n4. تصاویر با کیفیت محصول را ببینید\n5. نظرات کاربران را مطالعه کنید',
+        'keywords': ['مشخصات', 'توضیحات', 'مشخصات فنی', 'ویژگی محصول', 'اطلاعات محصول']
+    },
+    'اصالت محصول': {
+        'answer': '✅ **اصالت محصولات:**\n\n• بله، تمامی محصولات اورجینال و اصلی هستند\n• از تامین‌کنندگان معتبر و رسمی تهیه می‌شوند\n• دارای هولوگرام اصالت و شماره سریال هستند\n• ضمانت بازگشت وجه در صورت عدم اصالت',
+        'keywords': ['اورجینال', 'اصل', 'اصالت', 'تقلبی', 'جنس اصلی', 'اورجينال']
+    },
+    'تست محصول': {
+        'answer': '🔧 **تست محصول قبل از خرید:**\n\n• 🏪 به صورت حضوری در فروشگاه امکان تست وجود دارد\n\n• 🛒 برای خرید آنلاین:\n  - می‌توانید از خدمات مرجوعی 7 روزه استفاده کنید\n  - در صورت عدم رضایت، محصول را مرجوع کنید\n  - هزینه مرجوعی در صورت سالم بودن محصول بر عهده ماست',
+        'keywords': ['تست', 'امتحان', 'ازمایش', 'قبل از خرید', 'امتحان محصول']
+    },
+
+    # دسته: سفارش
+    'ثبت سفارش': {
+        'answer': '🛒 **روش ثبت سفارش:**\n\n1. 🎯 محصول مورد نظر را انتخاب کنید\n2. ➕ به سبد خرید اضافه کنید\n3. 🛒 وارد سبد خرید شوید\n4. 📝 اطلاعات ارسال را تکمیل کنید\n5. 💳 روش پرداخت را انتخاب کنید\n6. ✅ سفارش را نهایی کنید\n\nپس از ثبت، کد رهگیری برای شما ارسال می‌شود.',
+        'keywords': ['ثبت سفارش', 'چطور سفارش بدم', 'نحوه خرید', 'خرید کنم', 'سفارش دادن']
+    },
+    'تغییر سفارش': {
+        'answer': '✏️ **تغییر یا لغو سفارش:**\n\n• ✅ فقط تا قبل از پردازش سفارش امکان تغییر یا لغو وجود دارد\n• ❌ پس از ارسال، سفارش قابل تغییر نیست\n• ⏰ برای تغییر با پشتیبانی تماس بگیرید\n• 📞 شماره پشتیبانی: 021-12345678',
+        'keywords': ['تغییر سفارش', 'لغو سفارش', 'ویرایش سفارش', 'سفارش رو عوض کنم', 'لغو کردن سفارش']
+    },
+    'پیگیری سفارش': {
+        'answer': '📦 **پیگیری سفارش:**\n\nروش‌های پیگیری:\n1. 🔐 ورود به حساب کاربری → بخش "سفارش‌ها"\n2. 🔢 وارد کردن شماره پیگیری در سایت\n3. 📞 تماس با پشتیبانی\n4. 🤖 پیام به این ربات با شماره سفارش\n\nشماره پیگیری پس از ثبت سفارش برای شما ارسال می‌شود.',
+        'keywords': ['پیگیری', 'پیگیری سفارش', 'وضعیت سفارش', 'کد رهگیری', 'سفارشم کجاست']
+    },
+    'سفارش برای دیگران': {
+        'answer': '🎁 **سفارش برای دیگران:**\n\n• بله، می‌توانید برای شخص دیگری سفارش دهید\n• در صفحه پرداخت، آدرس و اطلاعات گیرنده را وارد کنید\n• می‌توانید به عنوان هدیه ارسال کنید\n• امکان درج پیام برای گیرنده وجود دارد',
+        'keywords': ['برای دیگران', 'هدیه', 'سفارش برای دوست', 'گیرنده متفاوت', 'برای کس دیگه']
+    },
+    'سفارش تلفنی': {
+        'answer': '📞 **سفارش تلفنی:**\n\n• بله، امکان ثبت سفارش تلفنی وجود دارد\n• 📞 شماره پشتیبانی: 021-12345678\n• ⏰ ساعات پاسخگویی: 9 صبح تا 6 عصر\n• در تماس، اطلاعات محصول و آدرس را ارائه دهید',
+        'keywords': ['سفارش تلفنی', 'تلفنی', 'تماس تلفنی', 'تلفنی سفارش بدم']
+    },
+
+    # دسته: پرداخت
+    'روش پرداخت': {
+        'answer': '💳 **روش‌های پرداخت:**\n\n• 💰 کارت‌به‌کارت به شماره کارت 6037-XXXX-XXXX-XXXX\n• 🏦 درگاه بانکی آنلاین\n• 📦 پرداخت در محل (در مناطق خاص)\n• 👛 کیف پول داخلی سایت\n\nتمام پرداخت‌ها امن و مطمئن هستند.',
+        'keywords': ['پرداخت', 'روش پرداخت', 'چطور پول بدم', 'درگاه پرداخت', 'کارت به کارت']
+    },
+    'امنیت پرداخت': {
+        'answer': '🔒 **امنیت پرداخت:**\n\n• تمامی پرداخت‌ها از درگاه‌های بانکی معتبر انجام می‌شوند\n• رمزنگاری SSL فعال است\n• اطلاعات کارت شما ذخیره نمی‌شود\n• دارای نماد اعتماد الکترونیکی\n• در صورت هرگونه مشکل، پشتیبانی 24 ساعته',
+        'keywords': ['امن', 'امنیت', 'پرداخت امن', 'ایمنی', 'اطلاعات کارت', 'رمزنگاری']
+    },
+    'پرداخت ناموفق': {
+        'answer': '❌ **پرداخت ناموفق:**\n\nاگر پرداخت شما ناموفق بود:\n• صفحه پرداخت دوباره باز می‌شود\n• مبلغ از حساب شما کسر نشده است\n• در صورت کسر مبلغ، طی 24 ساعت به حساب شما بازگردانده می‌شود\n• برای پیگیری با پشتیبانی تماس بگیرید\n• شماره پشتیبانی: 021-12345678',
+        'keywords': ['پرداخت ناموفق', 'پرداخت نشد', 'خطای پرداخت', 'پول کم شد ولی پرداخت نشد']
+    },
+    'پرداخت قسطی': {
+        'answer': '📅 **پرداخت اقساطی:**\n\n• در حال حاضر برخی محصولات با شرایط اقساطی قابل خرید هستند\n• اطلاعات اقساط در صفحه محصول ذکر شده است\n• معمولاً 6 تا 12 ماهه\n• نیاز به مدارک هویتی دارد\n• برای اطلاعات بیشتر با پشتیبانی تماس بگیرید',
+        'keywords': ['قسط', 'اقساط', 'پرداخت قسطی', 'اقساطی', 'چند قسط']
+    },
+    'رسید پرداخت': {
+        'answer': '🧾 **دریافت رسید پرداخت:**\n\n• رسید پرداخت به ایمیل ثبت شده ارسال می‌شود\n• در حساب کاربری شما در بخش "سفارش‌ها" قابل مشاهده است\n• می‌توانید از بخش پشتیبانی درخواست فاکتور رسمی کنید\n• فاکتور رسمی برای موارد گارانتی ضروری است',
+        'keywords': ['رسید', 'فاکتور', 'دریافت فاکتور', 'رسید پرداخت', 'فاکتور خرید']
+    },
+
+    # دسته: ارسال و تحویل
+    'زمان تحویل': {
+        'answer': '⏱️ **زمان تحویل سفارش:**\n\n• 🏙️ تهران: 1-2 روز کاری\n• 🏢 شهرستان‌ها: 3-5 روز کاری\n• 🚚 پست پیشتاز: 2-4 روز کاری\n• 📦 پست سفارشی: 4-7 روز کاری\n\nزمان دقیق پس از ثبت سفارش اعلام می‌شود.',
+        'keywords': ['زمان تحویل', 'چقد طول میکشه', 'کی میرسه', 'مدت ارسال', 'زمان ارسال']
+    },
+    'هزینه ارسال': {
+        'answer': '💰 **هزینه ارسال:**\n\n• هزینه ارسال بر اساس وزن، حجم و مقصد محاسبه می‌شود\n• قبل از پرداخت، هزینه نهایی نمایش داده می‌شود\n• 📦 خریدهای بالای 500 هزار تومان رایگان\n• 🏙️ تهران: از 20 هزار تومان\n• 🏢 شهرستان: از 30 هزار تومان',
+        'keywords': ['هزینه ارسال', 'پست', 'هزینه پست', 'ارسال چقدره', 'هزینه حمل']
+    },
+    'تغییر آدرس': {
+        'answer': '🏠 **تغییر آدرس تحویل:**\n\n• تا قبل از پردازش سفارش، می‌توانید آدرس را تغییر دهید\n• پس از پردازش، تغییر آدرس ممکن نیست\n• برای تغییر با پشتیبانی تماس بگیرید\n• 📞 شماره پشتیبانی: 021-12345678\n• ⏰ سریع اقدام کنید',
+        'keywords': ['تغییر آدرس', 'عوض کردن آدرس', 'آدرس اشتباه', 'آدرس جدید']
+    },
+    'تحویل فوری': {
+        'answer': '⚡ **تحویل فوری و همان روز:**\n\n• در برخی شهرها و محصولات منتخب، امکان تحویل همان روز فراهم است\n• 🏙️ تهران: برای سفارشات قبل از 12 ظهر\n• 📦 هزینه تحویل فوری: 50 هزار تومان\n• برای اطلاعات بیشتر با پشتیبانی تماس بگیرید',
+        'keywords': ['تحویل فوری', 'همان روز', 'سریع', 'فوری', 'تحویل سریع']
+    },
+    'محصول آسیب دیده': {
+        'answer': '🚨 **محصول آسیب دیده هنگام تحویل:**\n\n1. ❌ محصول را تحویل نگیرید\n2. 📸 در حضور پیک، عکس از آسیب بگیرید\n3. 📞 سریعاً با پشتیبانی تماس بگیرید\n4. 🔄 محصول تعویض خواهد شد\n5. ⚠️ در صورت تحویل گرفتن، گارانتی void می‌شود\n\nشماره پشتیبانی: 021-12345678',
+        'keywords': ['آسیب', 'شکسته', 'خراب', 'مشکل دار', 'محصول اسیب دیده', 'شکستگی']
+    },
+
+    # دسته: عمومی
+    'ساعات کاری': {
+        'answer': '🕒 **ساعات کاری فروشگاه:**\n\n⏰ شنبه تا چهارشنبه: ۸ صبح تا ۱۰ شب\n⏰ پنجشنبه: ۸ صبح تا ۸ شب\n⏰ جمعه: ۱۰ صبح تا ۶ شب\n\n📞 پشتیبانی تلفنی: ۹ صبح تا ۶ عصر',
+        'keywords': ['ساعت', 'زمان', 'باز', 'بسته', 'کاری', 'ساعات کاری']
+    },
+    'آدرس': {
+        'answer': '📍 **آدرس فروشگاه:**\n\n🏢 تهران، خیابان ولیعصر، پلاک ۱۰۰۰\n📱 شماره تماس: ۰۲۱-۱۲۳۴۵۶۷۸\n📞 پشتیبانی: ۰۲۱-۱۲۳۴۵۶۷۹\n🗺️ برای مسیریابی از گوگل مپ استفاده کنید.',
+        'keywords': ['آدرس', 'مکان', 'نشانی', 'کجا', 'آدرس فروشگاه', 'نشانی فروشگاه']
     }
 }
 
-# ---------- Database helpers (SQLite sample) ----------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id TEXT PRIMARY KEY,
-            customer_name TEXT,
-            status TEXT,
-            last_update TEXT
-        );
-    """)
-    # sample data
-    cur.execute(
-        "INSERT OR IGNORE INTO orders (id, customer_name, status, last_update) VALUES (?, ?, ?, ?)",
-        ("ORDER12345", "علی رضایی", "در حال پردازش", "2025-11-29 12:34")
-    )
-    cur.execute(
-        "INSERT OR IGNORE INTO orders (id, customer_name, status, last_update) VALUES (?, ?, ?, ?)",
-        ("ORDER54321", "سارا موسوی", "ارسال شده", "2025-11-28 08:12")
-    )
-    conn.commit()
-    conn.close()
-
-def lookup_order(order_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT id, customer_name, status, last_update FROM orders WHERE id = ?", (order_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "customer_name": row[1],
-        "status": row[2],
-        "last_update": row[3],
-    }
-
-# ---------- AI helper (placeholder) ----------
-def generate_ai_answer(prompt: str) -> str:
+async def start(update: Update, context: CallbackContext) -> None:
+    """Handler برای دستور /start"""
+    user = update.effective_user
+    keyboard = [
+        [InlineKeyboardButton("📦 محصولات", callback_data="cat_products"), 
+         InlineKeyboardButton("🛒 سفارش", callback_data="cat_order")],
+        [InlineKeyboardButton("💳 پرداخت", callback_data="cat_payment"), 
+         InlineKeyboardButton("🚚 ارسال", callback_data="cat_shipping")],
+        [InlineKeyboardButton("📞 تماس با پشتیبانی", callback_data="support"),
+         InlineKeyboardButton("🏠 اطلاعات فروشگاه", callback_data="info")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    welcome_text = f"""
+    🌟 سلام {user.first_name} عزیز! 
+    
+    به ربات پشتیبانی فروشگاه خوش آمدید 🤖
+    
+    من می‌تونم در زمینه‌های زیر کمکتون کنم:
+    • 📦 اطلاعات محصولات
+    • 🛒 راهنمای سفارش
+    • 💳 روش‌های پرداخت
+    • 🚚 خدمات ارسال
+    • 📞 پشتیبانی
+    
+    لطفا سوال خودتون رو بپرسید یا از دسته‌بندی زیر استفاده کنید:
     """
-    مثال: جایگزین با API واقعی شما (OpenAI یا سرویس دیگر).
-    اگر توکن AI_API_TOKEN تنظیم نشده باشد، پیغام دیفالت می‌دهد.
+    
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
+async def help_command(update: Update, context: CallbackContext) -> None:
+    """Handler برای دستور /help"""
+    help_text = """
+    📋 **راهنمای استفاده از ربات:**
+    
+    **روش‌های ارتباط:**
+    • برای شروع /start را بفرستید
+    • سوال خود را مستقیما تایپ کنید
+    • از دکمه‌های دسته‌بندی استفاده کنید
+    • برای تماس با اپراتور از "تماس با پشتیبانی" استفاده کنید
+    
+    **نمونه سوالات:**
+    - موجودی محصول فلان چطوره؟
+    - چطور می‌تونم خرید کنم؟
+    - هزینه ارسال به شهرستان چقدره؟
+    - گارانتی محصولات چطوره؟
     """
-    if not AI_API_TOKEN:
-        return "سرویس هوش‌مصنوعی فعال نیست. لطفاً بعداً تلاش کنید یا از گزینه‌های منو استفاده کنید."
-    # نمونه‌ی درخواست (این URL فرضی است — آن را با API واقعی خود جایگزین کنید)
-    try:
-        resp = requests.post(
-            "https://api.example-ai.com/generate",
-            json={"prompt": prompt, "max_tokens": 300},
-            headers={"Authorization": f"Bearer {AI_API_TOKEN}"},
-            timeout=10,
+    
+    keyboard = [
+        [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")],
+        [InlineKeyboardButton("📞 پشتیبانی", callback_data="support")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(help_text, reply_markup=reply_markup)
+
+async def handle_message(update: Update, context: CallbackContext) -> None:
+    """Handler برای پیام‌های متنی"""
+    user_message = update.message.text.lower()
+    
+    # جستجو در دیتابیس سوالات متداول
+    found_answer = None
+    for category, data in FAQ_DATABASE.items():
+        for keyword in data['keywords']:
+            if keyword in user_message:
+                found_answer = data['answer']
+                break
+        if found_answer:
+            break
+    
+    if found_answer:
+        await update.message.reply_text(found_answer)
+    else:
+        # اگر سوال تشخیص داده نشد
+        not_found_text = """
+        ❓ **متوجه سوال شما نشدم!**
+        
+        لطفا سوال خود را به صورت واضح‌تر بیان کنید یا از دسته‌بندی‌های زیر استفاده کنید:
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📦 محصولات", callback_data="cat_products")],
+            [InlineKeyboardButton("🛒 سفارش", callback_data="cat_order")],
+            [InlineKeyboardButton("💳 پرداخت", callback_data="cat_payment")],
+            [InlineKeyboardButton("🚚 ارسال", callback_data="cat_shipping")],
+            [InlineKeyboardButton("📞 تماس با اپراتور", callback_data="support")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(not_found_text, reply_markup=reply_markup)
+
+async def button_handler(update: Update, context: CallbackContext) -> None:
+    """Handler برای دکمه‌های اینلاین"""
+    query = update.callback_query
+    await query.answer()
+    
+    # دسته‌بندی محصولات
+    if query.data == "cat_products":
+        keyboard = [
+            [InlineKeyboardButton("📦 موجودی محصول", callback_data="faq_موجودی محصول")],
+            [InlineKeyboardButton("🛡️ گارانتی", callback_data="faq_گارانتی محصولات")],
+            [InlineKeyboardButton("📋 مشخصات محصول", callback_data="faq_مشخصات محصول")],
+            [InlineKeyboardButton("✅ اصالت محصول", callback_data="faq_اصالت محصول")],
+            [InlineKeyboardButton("🔧 تست محصول", callback_data="faq_تست محصول")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📦 **دسته‌بندی محصولات**\n\nلطفا موضوع مورد نظر را انتخاب کنید:",
+            reply_markup=reply_markup
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get("text", "پاسخی دریافت نشد.")
-        logger.error("AI service returned %s: %s", resp.status_code, resp.text)
-        return "خطا در ارتباط با سرویس هوش‌مصنوعی."
-    except Exception as e:
-        logger.exception("AI request failed")
-        return "خطا در ارتباط با سرویس هوش‌مصنوعی."
+    
+    # دسته‌بندی سفارش
+    elif query.data == "cat_order":
+        keyboard = [
+            [InlineKeyboardButton("🛒 ثبت سفارش", callback_data="faq_ثبت سفارش")],
+            [InlineKeyboardButton("✏️ تغییر سفارش", callback_data="faq_تغییر سفارش")],
+            [InlineKeyboardButton("📦 پیگیری سفارش", callback_data="faq_پیگیری سفارش")],
+            [InlineKeyboardButton("🎁 سفارش برای دیگران", callback_data="faq_سفارش برای دیگران")],
+            [InlineKeyboardButton("📞 سفارش تلفنی", callback_data="faq_سفارش تلفنی")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🛒 **دسته‌بندی سفارش**\n\nلطفا موضوع مورد نظر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
+    
+    # دسته‌بندی پرداخت
+    elif query.data == "cat_payment":
+        keyboard = [
+            [InlineKeyboardButton("💳 روش پرداخت", callback_data="faq_روش پرداخت")],
+            [InlineKeyboardButton("🔒 امنیت پرداخت", callback_data="faq_امنیت پرداخت")],
+            [InlineKeyboardButton("❌ پرداخت ناموفق", callback_data="faq_پرداخت ناموفق")],
+            [InlineKeyboardButton("📅 پرداخت قسطی", callback_data="faq_پرداخت قسطی")],
+            [InlineKeyboardButton("🧾 رسید پرداخت", callback_data="faq_رسید پرداخت")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "💳 **دسته‌بندی پرداخت**\n\nلطفا موضوع مورد نظر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
+    
+    # دسته‌بندی ارسال
+    elif query.data == "cat_shipping":
+        keyboard = [
+            [InlineKeyboardButton("⏱️ زمان تحویل", callback_data="faq_زمان تحویل")],
+            [InlineKeyboardButton("💰 هزینه ارسال", callback_data="faq_هزینه ارسال")],
+            [InlineKeyboardButton("🏠 تغییر آدرس", callback_data="faq_تغییر آدرس")],
+            [InlineKeyboardButton("⚡ تحویل فوری", callback_data="faq_تحویل فوری")],
+            [InlineKeyboardButton("🚨 محصول آسیب دیده", callback_data="faq_محصول آسیب دیده")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🚚 **دسته‌بندی ارسال و تحویل**\n\nلطفا موضوع مورد نظر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
+    
+    # نمایش سوالات متداول
+    elif query.data.startswith("faq_"):
+        category = query.data[4:]
+        if category in FAQ_DATABASE:
+            answer = FAQ_DATABASE[category]['answer']
+            
+            # دکمه بازگشت به دسته مناسب
+            back_button = "main_menu"
+            if "محصول" in category:
+                back_button = "cat_products"
+            elif "سفارش" in category:
+                back_button = "cat_order"
+            elif "پرداخت" in category:
+                back_button = "cat_payment"
+            elif "ارسال" in category or "تحویل" in category:
+                back_button = "cat_shipping"
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 بازگشت", callback_data=back_button)],
+                [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(answer, reply_markup=reply_markup)
+    
+    elif query.data == "support":
+        support_text = """
+        📞 **تماس با پشتیبانی:**
+        
+        **روش‌های ارتباط:**
+        • 👤 آیدی ادمین: @ghbyhbjvhjguboijbot
+        • 📞 شماره تماس: ۰۲۱-۱۲۳۴۵۶۷۸
+        • 📱 واتساپ: ۰۹۱۲۱۲۳۴۵۶۷
+        • 📧 ایمیل: support@store.com
+        
+        **ساعات پاسخگویی:**
+        ⏰ شنبه تا چهارشنبه: ۹ صبح تا ۶ عصر
+        ⏰ پنجشنبه: ۹ صبح تا ۴ عصر
+        
+        لطفا سوال خود را مستقیما برای ادمین ارسال کنید.
+        """
+        keyboard = [
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")],
+            [InlineKeyboardButton("❓ سوالات متداول", callback_data="cat_products")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(support_text, reply_markup=reply_markup)
+    
+    elif query.data == "info":
+        info_text = """
+        🏪 **اطلاعات فروشگاه:**
+        
+        **📌 آدرس:**
+        🏢 تهران، خیابان ولیعصر، پلاک ۱۰۰۰
+        
+        **📞 تماس:**
+        📱 فروشگاه: ۰۲۱-۱۲۳۴۵۶۷۸
+        📞 پشتیبانی: ۰۲۱-۱۲۳۴۵۶۷۹
+        
+        **🕒 ساعات کاری:**
+        ⏰ شنبه تا چهارشنبه: ۸ صبح تا ۱۰ شب
+        ⏰ پنجشنبه: ۸ صبح تا ۸ شب
+        ⏰ جمعه: ۱۰ صبح تا ۶ شب
+        
+        **🌐 وبسایت:** www.mystore.com
+        """
+        keyboard = [
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")],
+            [InlineKeyboardButton("📞 پشتیبانی", callback_data="support")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(info_text, reply_markup=reply_markup)
+    
+    elif query.data == "main_menu":
+        keyboard = [
+            [InlineKeyboardButton("📦 محصولات", callback_data="cat_products"), 
+             InlineKeyboardButton("🛒 سفارش", callback_data="cat_order")],
+            [InlineKeyboardButton("💳 پرداخت", callback_data="cat_payment"), 
+             InlineKeyboardButton("🚚 ارسال", callback_data="cat_shipping")],
+            [InlineKeyboardButton("📞 تماس با پشتیبانی", callback_data="support"),
+             InlineKeyboardButton("🏠 اطلاعات فروشگاه", callback_data="info")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🏠 **منوی اصلی**\n\nلطفا دسته مورد نظر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
 
-# ---------- Bot handlers (async) ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("سؤالات متداول", callback_data="faq_main")],
-        [InlineKeyboardButton("پیگیری سفارش", callback_data="track_order")],
-        [InlineKeyboardButton("تماس با پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton("سؤال آزاد (هوش‌مصنوعی)", callback_data="ai_question")]
-    ]
-    text = "سلام! به ربات پشتیبانی فروشگاه خوش آمدید.\nچطور می‌تونم کمکتون کنم؟"
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def faq_main_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    kb = []
-    for cat in FAQ.keys():
-        kb.append([InlineKeyboardButton(cat, callback_data=f"faq_cat::{cat}")])
-    kb.append([InlineKeyboardButton("برگشت", callback_data="back_main")])
-    await query.edit_message_text("دسته‌بندی سؤالات متداول:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def faq_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    _, cat = query.data.split("::", 1)
-    entries = FAQ.get(cat, {})
-    if not entries:
-        await query.edit_message_text("هیچ سوالی در این دسته وجود ندارد.")
-        return
-    kb = []
-    for q in entries.keys():
-        kb.append([InlineKeyboardButton(q, callback_data=f"faq_q::{cat}::{q}")])
-    kb.append([InlineKeyboardButton("برگشت", callback_data="faq_main")])
-    await query.edit_message_text(f"سؤالات در دستهٔ *{cat}*:", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(kb))
-
-async def faq_q_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    _, cat, q = query.data.split("::", 2)
-    answer = FAQ.get(cat, {}).get(q, "پاسخی موجود نیست.")
-    kb = [
-        [InlineKeyboardButton("نیافتم — تماس با پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton("برگشت", callback_data=f"faq_cat::{cat}")]
-    ]
-    await query.edit_message_text(f"*سؤال:* {q}\n\n*پاسخ:* {answer}", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(kb))
-
-async def back_main_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    keyboard = [
-        [InlineKeyboardButton("سؤالات متداول", callback_data="faq_main")],
-        [InlineKeyboardButton("پیگیری سفارش", callback_data="track_order")],
-        [InlineKeyboardButton("تماس با پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton("سؤال آزاد (هوش‌مصنوعی)", callback_data="ai_question")]
-    ]
-    await query.edit_message_text("چطور می‌تونم کمکتون کنم؟", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def track_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("لطفا شماره سفارش خود را وارد کنید (مثال: ORDER12345).")
-    # علامت‌گذاری برای پیام بعدی
-    context.user_data["awaiting_order"] = True
-
-async def ai_question_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("سؤالتان را بنویسید. برای دریافت پاسخ هوش‌مصنوعی، پیام را با پیش‌وند `!ai ` شروع کنید.\nمثال: `!ai هزینه ارسال برای تهران چقدر است؟`")
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    user_id = update.effective_user.id if update.effective_user else None
-
-    # بررسی پیگیری سفارش
-    if context.user_data.get("awaiting_order"):
-        context.user_data.pop("awaiting_order", None)
-        order_id = text
-        order = lookup_order(order_id)
-        if order:
-            reply = (
-                f"اطلاعات سفارش:\n"
-                f"شناسه: {order['id']}\n"
-                f"نام مشتری: {order['customer_name']}\n"
-                f"وضعیت: {order['status']}\n"
-                f"آخرین به‌روزرسانی: {order['last_update']}"
-            )
-            kb = [[InlineKeyboardButton("نیافتم — تماس با پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME}")]]
-            await update.message.reply_text(reply, reply_markup=InlineKeyboardMarkup(kb))
-        else:
-            kb = [[InlineKeyboardButton("درخواست کمک از پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME}")]]
-            await update.message.reply_text("سفارش پیدا نشد. لطفاً شناسه سفارش را بررسی کنید یا با پشتیبانی تماس بگیرید.", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    # پردازش دستور AI با پیشوند !ai
-    if text.startswith("!ai "):
-        prompt = text[len("!ai "):].strip()
-        await update.message.reply_text("در حال دریافت پاسخ از سرویس هوش‌مصنوعی...")
-        # اجرای همگام با تابع sync generate_ai_answer (requests) را در executor اجرا می‌کنیم تا بلاک نشود
-        loop = asyncio.get_event_loop()
-        ai_resp = await loop.run_in_executor(None, generate_ai_answer, prompt)
-        await update.message.reply_text(ai_resp)
-        return
-
-    # پیام پیش‌فرض
-    await update.message.reply_text("برای شروع /start را ارسال کنید یا از دکمه‌ها استفاده کنید.")
-
-# Admin-only command example
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_stats(update: Update, context: CallbackContext) -> None:
+    """دستور برای مشاهده آمار توسط ادمین"""
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("فقط ادمین مجاز است.")
+        await update.message.reply_text("❌ دسترسی denied!")
         return
-    text = " ".join(context.args) if context.args else ""
-    if not text:
-        await update.message.reply_text("متن پخش را بنویسید: /broadcast متن پیام")
-        return
+    
+    stats_text = f"""
+    📊 **آمار ربات:**
+    
+    • ✅ وضعیت: فعال
+    • 🕒 آخرین فعالیت: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    • 🚀 میزبان: Railway
+    • 📝 تعداد سوالات: {len(FAQ_DATABASE)} موضوع
+    • 🏪 محیط: Production
+    
+    🤖 ربات در حال اجراست و آماده پاسخگویی!
+    """
+    
+    await update.message.reply_text(stats_text)
 
-    # در این نمونه، فهرستی از کاربران نداریم؛ اینجا یک مثال ساده است:
-    await update.message.reply_text("شروع پخش (نمونه): " + text)
-    # نکته: برای پخش واقعی باید table کاربران را داشته باشید و پیغام را برای هر کاربر ارسال کنید.
+async def error_handler(update: Update, context: CallbackContext) -> None:
+    """Handler برای خطاها"""
+    logger.error(f"خطا رخ داد: {context.error}")
 
-# Unknown command handler
-async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("دستور نامشخص. برای شروع /start را بزنید.")
-
-# ---------- Main ----------
-async def main():
-    init_db()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Command handlers
+def main() -> None:
+    """تابع اصلی برای اجرای ربات"""
+    # ایجاد اپلیکیشن
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # اضافه کردن handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("broadcast", admin_broadcast))  # usage: /broadcast text (admin only)
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # اضافه کردن handler خطا
+    application.add_error_handler(error_handler)
+    
+    # اجرای ربات
+    print("🤖 ربات در حال اجراست...")
+    print(f"✅ توکن: {BOT_TOKEN[:10]}...")
+    print(f"✅ آیدی ادمین: {ADMIN_ID}")
+    print(f"✅ تعداد سوالات: {len(FAQ_DATABASE)}")
+    print("📍 میزبان: Railway")
+    
+    # اجرای ربات
+    application.run_polling()
 
-    # CallbackQuery handlers
-    application.add_handler(CallbackQueryHandler(faq_main_cb, pattern="^faq_main$"))
-    application.add_handler(CallbackQueryHandler(faq_cat_cb, pattern="^faq_cat::"))
-    application.add_handler(CallbackQueryHandler(faq_q_cb, pattern="^faq_q::"))
-    application.add_handler(CallbackQueryHandler(back_main_cb, pattern="^back_main$"))
-    application.add_handler(CallbackQueryHandler(track_order_cb, pattern="^track_order$"))
-    application.add_handler(CallbackQueryHandler(ai_question_cb, pattern="^ai_question$"))
-
-    # Message handlers
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message_handler))
-
-    # Fallback unknown command
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
-
-    logger.info("Bot starting (polling)...")
-    # Run polling (blocking)
-    await application.run_polling()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped.")
+if __name__ == '__main__':
+    main()
